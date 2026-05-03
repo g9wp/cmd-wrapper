@@ -1,0 +1,13 @@
+[package]
+name = "cmd-wrapper"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+regex = "1.10"
+shell-words = "1.1"
+anyhow = "1.0"
+chrono = "0.4"
