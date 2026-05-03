@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*" # 仅在推送 v1.0.0, v2.1.0 等 tag 时触发
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- 关键步骤：提取 Cargo.toml 中的项目名称 ---
+      - name: Get project name
+        shell: bash
+        run: |
+          # 提取 [package] 下的 name 字段
+          PKG_NAME=$(grep -m 1 '^name =' Cargo.toml | cut -d '"' -f 2)
+          echo "BIN_NAME=$PKG_NAME" >> $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # 根据平台处理二进制后缀
+      - name: Post-process Binary
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release/
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            mv ${{ env.BIN_NAME }}.exe ${{ env.BIN_NAME }}-${{ matrix.target }}.exe
+          else
+            mv ${{ env.BIN_NAME }} ${{ env.BIN_NAME }}-${{ matrix.target }}
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}
+          # 上传重命名后的文件，避免发布时所有平台文件名冲突
+          path: target/${{ matrix.target }}/release/${{ env.BIN_NAME }}-*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 必须赋予写入权限以创建 Release
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binaries-* # 下载所有以 binaries- 开头的产物
+          merge-multiple: true
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/* # 直接上传所有下载的文件
+          generate_release_notes: true
