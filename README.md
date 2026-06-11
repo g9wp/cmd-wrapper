@@ -84,7 +84,7 @@ VERSION = "1.0.0"
 
 **实际发生的调用：**
 ```bash
-VERSION=1.0.0 C:/msys64/usr/bin/fish.exe -lc xxx/yyy/a.fish -F=true -d ddd --long2=LONG BB xxxCCC AA args: AA BB CCC DD args[1-3]: BB CCC
+VERSION=1.0.0 C:/msys64/usr/bin/fish.exe -lc xxx/yyy/a.fish -F=true -d ddd --long2=LONG BB xxxCCC AA args: AA BB CCC DD args[1-3]: --a-BB --a-CCC
 ```
 
 ---

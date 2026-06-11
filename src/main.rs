@@ -177,7 +177,7 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
             if start < pos.len() {
                 let actual_end = end.min(pos.len());
                 for item in &pos[start..actual_end] {
-                    result.push(maybe_quote(item, cfg.shell_quote));
+                    result.push(maybe_quote(&re_slice.replace(tpl, item), cfg.shell_quote));
                 }
             }
             continue;
