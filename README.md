@@ -106,6 +106,52 @@ shell_quote = false
 
 ---
 
+### 🛠️ 创建模式（一键生成别名 + 配置）
+
+当与程序同名的 `.toml` 配置文件**不存在**时，工具自动进入创建模式：把自身**复制 / 硬链接 / 符号链接**为别名，并根据命令行选项生成别名对应的 `.toml` 配置（所有 TOML 选项均可转换为命令行参数）。
+
+```text
+用法: <本程序> <目标别名路径> [选项]
+
+别名创建方式:
+  -l, --hardlink    以硬链接创建别名（需与源在同一磁盘卷）
+  -s, --symlink     以符号链接创建别名（Windows 需管理员权限或开发者模式）
+  -c, --copy        以复制方式创建别名（默认）
+
+TOML 选项:
+  --prog=<程序>           必填，实际执行的程序路径或名称
+  --args=<参数>           参数模板，可重复指定
+  --env=<KEY=VALUE>       环境变量，可重复指定
+  --shell_quote=<BOOL>
+  --stdin / --stdout / --stderr=<模式>   inherit / null / piped
+  --log_file=<路径>
+  --named_args_mode=<模式>
+  --run_as_admin=<BOOL>
+```
+
+**示例**：创建 `sudo_fish.exe` 硬链接别名，让 fish 以管理员身份运行：
+
+```bash
+cmd-wrapper --hardlink C:/msys64/usr/local/bin/sudo_fish.exe \
+    --prog=C:/msys64/usr/bin/fish.exe \
+    --args=-lc --args='$(...args)' \
+    --shell_quote=true --run_as_admin=true
+```
+
+执行后生成：
+
+```toml
+# C:/msys64/usr/local/bin/sudo_fish.toml
+prog = "C:/msys64/usr/bin/fish.exe"
+args = ["-lc", "$(...args)"]
+shell_quote = true
+run_as_admin = true
+```
+
+> 提示：创建模式仅在找不到配置时启用。若你的 `cmd-wrapper.exe` 旁边已有 `cmd-wrapper.toml`，请使用一份不带配置的干净副本作为"安装器"来创建别名。
+
+---
+
 ### 🔐 Windows 管理员权限（UAC 提权）
 
 在 Windows 上，为 TOML 增加 `run_as_admin = true` 后，程序会以**管理员权限**执行目标程序：

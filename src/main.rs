@@ -11,6 +11,9 @@ use std::process::{Command, Stdio};
 #[cfg(target_os = "windows")]
 mod elevate;
 
+// 创建模式：未找到同名 toml 时生成别名 + 配置
+mod create;
+
 #[derive(Debug, Deserialize)]
 struct Config {
     prog: String,
@@ -54,6 +57,12 @@ fn main() -> Result<()> {
     // 1. 获取执行程序同名的 toml 文件
     let exe_path = env::current_exe()?;
     let config_path = exe_path.with_extension("toml");
+
+    // 创建模式：未找到同名 .toml 时，把自身创建为别名并生成对应配置
+    if !config_path.exists() {
+        return create::run(&exe_path);
+    }
+
     let config_content = std::fs::read_to_string(&config_path)
         .with_context(|| format!("无法读取配置文件: {:?}", config_path))?;
     let config: Config = toml::from_str(&config_content)?;
