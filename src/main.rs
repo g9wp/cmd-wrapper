@@ -54,8 +54,30 @@ fn default_io() -> String {
 }
 
 fn main() -> Result<()> {
-    // 1. 获取执行程序同名的 toml 文件
+    // Windows: 若本进程是 UAC 提权重启出来的实例，立即脱离 runas 新建的控制台、
+    // 附加到父进程（终端）控制台并恢复工作目录（须在一切输出之前完成），
+    // 同时据此过滤提权专用参数
+    #[cfg(target_os = "windows")]
+    let elev_config = elevate::init_elevated();
+
+    // 解析用户输入的参数（提权实例还需过滤提权专用参数）
+    #[cfg(target_os = "windows")]
+    let user_args: Vec<String> = env::args()
+        .skip(1)
+        .filter(|a| elev_config.is_none() || !elevate::is_elev_arg(a))
+        .collect();
+    #[cfg(not(target_os = "windows"))]
+    let user_args: Vec<String> = env::args().skip(1).collect();
+
+    // 1. 获取执行程序同名的 toml 文件（提权实例用父进程传入的路径，
+    //    因为 runas 启动的进程 current_exe() 对硬链接别名可能返回其他名称）
     let exe_path = env::current_exe()?;
+    #[cfg(target_os = "windows")]
+    let config_path = match &elev_config {
+        Some(p) => p.clone(),
+        None => exe_path.with_extension("toml"),
+    };
+    #[cfg(not(target_os = "windows"))]
     let config_path = exe_path.with_extension("toml");
 
     // 创建模式：未找到同名 .toml 时，把自身创建为别名并生成对应配置
@@ -78,7 +100,6 @@ fn main() -> Result<()> {
     }
 
     // 2. 解析用户输入的参数
-    let user_args: Vec<String> = env::args().skip(1).collect();
     let (pos_args, named_args) = parse_user_args(&user_args, &config.named_args_mode);
 
     // 3. 构建最终参数列表
@@ -213,10 +234,10 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
             let key = caps.get(1).or(caps.get(2)).map(|m| m.as_str()).unwrap();
 
             // 优先级：位置参数 (arg1, arg2...) > 命名参数 > TOML环境变量 > 系统环境变量
-            if key.starts_with("arg") {
-                if let Ok(idx) = key[3..].parse::<usize>() {
-                    return pos.get(idx - 1).cloned().unwrap_or_default();
-                }
+            if key.starts_with("arg")
+                && let Ok(idx) = key[3..].parse::<usize>()
+            {
+                return pos.get(idx - 1).cloned().unwrap_or_default();
             }
 
             named

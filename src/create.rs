@@ -63,11 +63,11 @@ pub fn run(exe_path: &Path) -> Result<()> {
     if config_path.exists() {
         bail!("配置已存在: {}", config_path.display());
     }
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("无法创建目录: {}", parent.display()))?;
-        }
+    if let Some(parent) = target.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("无法创建目录: {}", parent.display()))?;
     }
 
     // 1. 创建别名（复制 / 硬链接 / 符号链接）
