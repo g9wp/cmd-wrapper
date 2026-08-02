@@ -7,6 +7,10 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+// Windows 管理员提权（UAC）支持模块
+#[cfg(target_os = "windows")]
+mod elevate;
+
 #[derive(Debug, Deserialize)]
 struct Config {
     prog: String,
@@ -23,6 +27,8 @@ struct Config {
     #[serde(default = "default_io")]
     stderr: String,
     log_file: Option<String>,
+    #[serde(default)]
+    run_as_admin: bool,
     #[serde(default = "default_mode")]
     named_args_mode: NamedArgsMode,
 }
@@ -51,6 +57,16 @@ fn main() -> Result<()> {
     let config_content = std::fs::read_to_string(&config_path)
         .with_context(|| format!("无法读取配置文件: {:?}", config_path))?;
     let config: Config = toml::from_str(&config_content)?;
+
+    // Windows: 按配置以管理员身份运行（触发 UAC 提权后重新启动自身）
+    #[cfg(target_os = "windows")]
+    if config.run_as_admin {
+        elevate::ensure_elevated()?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    if config.run_as_admin {
+        eprintln!("警告: `run_as_admin` 仅在 Windows 平台生效，已忽略");
+    }
 
     // 2. 解析用户输入的参数
     let user_args: Vec<String> = env::args().skip(1).collect();
