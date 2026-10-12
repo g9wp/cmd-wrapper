@@ -116,7 +116,7 @@ fn main() -> Result<()> {
             "[{:?}] Executing: {} {}",
             chrono::Local::now(),
             config.prog,
-            final_args.join(" ")
+            final_args.join("ˑˑ")
         )?;
     }
 
@@ -223,7 +223,10 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
             if start < pos.len() {
                 let actual_end = end.min(pos.len());
                 for item in &pos[start..actual_end] {
-                    result.push(maybe_quote(&re_slice.replace(tpl, item), cfg.shell_quote));
+                    // 用闭包做字面替换：regex 的字符串替换会把 item 里的 `$` 当作捕获组引用
+                    // （`$i` → 空、`$$` → `$`、`$1` → 第 1 个捕获组），必须原样插入外部参数
+                    let expanded = re_slice.replace_all(tpl, |_: &regex::Captures| item.as_str());
+                    result.push(maybe_quote(&expanded, cfg.shell_quote));
                 }
             }
             continue;
@@ -268,5 +271,60 @@ fn parse_stdio(s: &str) -> Stdio {
         "null" => Stdio::null(),
         "piped" => Stdio::piped(),
         _ => Stdio::inherit(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with(args: &[&str]) -> Config {
+        Config {
+            prog: "prog".into(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            env: HashMap::new(),
+            shell_quote: false,
+            stdin: "inherit".into(),
+            stdout: "inherit".into(),
+            stderr: "inherit".into(),
+            log_file: None,
+            run_as_admin: false,
+            named_args_mode: NamedArgsMode::All,
+        }
+    }
+
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn slice_expansion_preserves_dollar_in_external_args() {
+        let cfg = cfg_with(&["-lc", "$(...args)"]);
+        let user = args(&["for i in (seq 3); echo $i; end"]);
+        let out = build_final_args(&cfg, &user, &HashMap::new());
+        assert_eq!(out, args(&["-lc", "for i in (seq 3); echo $i; end"]));
+    }
+
+    #[test]
+    fn slice_expansion_dollar_forms_are_literal() {
+        // 这些 `$` 形式过去会被 regex 当捕获组引用：`$i`→空、`$$i`→`$i`、`$0`→整个匹配
+        let cfg = cfg_with(&["$(...args)"]);
+        let items = ["$i", "$$i", "$1", "$0", "${x}", "a$b$c"];
+        let out = build_final_args(&cfg, &args(&items), &HashMap::new());
+        assert_eq!(out, args(&items));
+    }
+
+    #[test]
+    fn slice_expansion_with_prefix_keeps_dollar() {
+        let cfg = cfg_with(&["--a-$(...args)"]);
+        let out = build_final_args(&cfg, &args(&["$x"]), &HashMap::new());
+        assert_eq!(out, args(&["--a-$x"]));
+    }
+
+    #[test]
+    fn var_expansion_inserts_value_literally() {
+        let cfg = cfg_with(&["$arg1"]);
+        let out = build_final_args(&cfg, &args(&["$HOME/$x"]), &HashMap::new());
+        assert_eq!(out, args(&["$HOME/$x"]));
     }
 }
