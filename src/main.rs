@@ -220,15 +220,17 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
     let mut result = Vec::new();
     // 符号需先转义才能拼进正则（如 `$`、`(`、`+` 等）
     let sym = regex::escape(&cfg.var_symbol);
-    let re_var = Regex::new(&format!(r"{sym}(\w+)|{sym}\((\w+)\)")).unwrap();
-    let re_slice = Regex::new(&format!(
-        r"{sym}\(\.\.\.args\[(\d*)\.\.(\d*)\]\)|{sym}\(\.\.\.args\)"
-    ))
-    .unwrap();
+    // 用 `<sym>` 作占位符，避免 `format!` 对正则里的 `{`/`}` 做转义处理
+    let re = |pat: &str| Regex::new(&pat.replace("<sym>", &sym)).unwrap();
+    let re_var = re(r"<sym>(\w+)|<sym>\((\w+)\)");
+    // 多参数模式：`${...args}` / `${...args[start..end]}` —— 每个位置参数各生成一个参数
+    let re_multi = re(r"<sym>\{\.\.\.args\[(\d*)\.\.(\d*)\]\}|<sym>\{\.\.\.args\}");
+    // 单参数模式：`$(...args[start..end])`，可带 `,<连接符>`（默认空格）—— 先 join 成一个参数
+    let re_join = re(r"<sym>\(\.\.\.args(?:\[(\d*)\.\.(\d*)\])?(?:,([^)]*))?\)");
 
     for tpl in &cfg.args {
-        // 处理展开语法 $...args[start..end]
-        if let Some(caps) = re_slice.captures(tpl) {
+        // 多参数模式：区间内每个参数各自生成一个参数（前后缀重复）
+        if let Some(caps) = re_multi.captures(tpl) {
             let start = caps
                 .get(1)
                 .and_then(|m| m.as_str().parse::<usize>().ok())
@@ -238,14 +240,36 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
                 .and_then(|m| m.as_str().parse::<usize>().ok())
                 .unwrap_or(pos.len());
 
-            if start < pos.len() {
-                let actual_end = end.min(pos.len());
+            let actual_end = end.min(pos.len());
+            // end <= start（如 `[5..2]`）时不产生参数，避免切片 panic
+            if start < actual_end {
                 for item in &pos[start..actual_end] {
                     // 用闭包做字面替换：regex 的字符串替换会把 item 里的 `$` 当作捕获组引用
                     // （`$i` → 空、`$$` → `$`、`$1` → 第 1 个捕获组），必须原样插入外部参数
-                    let expanded = re_slice.replace_all(tpl, |_: &regex::Captures| item.as_str());
+                    let expanded = re_multi.replace_all(tpl, |_: &regex::Captures| item.as_str());
                     result.push(maybe_quote(&expanded, cfg.shell_quote));
                 }
+            }
+            continue;
+        }
+
+        // 单参数模式：先把区间内的参数 join 成一个参数，再整体替换
+        if let Some(caps) = re_join.captures(tpl) {
+            let start = caps
+                .get(1)
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+                .unwrap_or(0);
+            let end = caps
+                .get(2)
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+                .unwrap_or(pos.len());
+            let sep = caps.get(3).map(|m| m.as_str()).unwrap_or(" ");
+
+            let actual_end = end.min(pos.len());
+            if start < actual_end {
+                let joined = pos[start..actual_end].join(sep);
+                let expanded = re_join.replace_all(tpl, |_: &regex::Captures| joined.as_str());
+                result.push(maybe_quote(&expanded, cfg.shell_quote));
             }
             continue;
         }
@@ -318,7 +342,7 @@ mod tests {
 
     #[test]
     fn slice_expansion_preserves_dollar_in_external_args() {
-        let cfg = cfg_with(&["-lc", "$(...args)"]);
+        let cfg = cfg_with(&["-lc", "${...args}"]);
         let user = args(&["for i in (seq 3); echo $i; end"]);
         let out = build_final_args(&cfg, &user, &HashMap::new());
         assert_eq!(out, args(&["-lc", "for i in (seq 3); echo $i; end"]));
@@ -327,7 +351,7 @@ mod tests {
     #[test]
     fn slice_expansion_dollar_forms_are_literal() {
         // 这些 `$` 形式过去会被 regex 当捕获组引用：`$i`→空、`$$i`→`$i`、`$0`→整个匹配
-        let cfg = cfg_with(&["$(...args)"]);
+        let cfg = cfg_with(&["${...args}"]);
         let items = ["$i", "$$i", "$1", "$0", "${x}", "a$b$c"];
         let out = build_final_args(&cfg, &args(&items), &HashMap::new());
         assert_eq!(out, args(&items));
@@ -335,9 +359,61 @@ mod tests {
 
     #[test]
     fn slice_expansion_with_prefix_keeps_dollar() {
-        let cfg = cfg_with(&["--a-$(...args)"]);
+        let cfg = cfg_with(&["--a-${...args}"]);
         let out = build_final_args(&cfg, &args(&["$x"]), &HashMap::new());
         assert_eq!(out, args(&["--a-$x"]));
+    }
+
+    #[test]
+    fn single_arg_mode_joins_with_space() {
+        // 无区间：全部位置参数用默认空格连接成一个参数
+        let cfg = cfg_with(&["--$(...args)x"]);
+        let out = build_final_args(&cfg, &args(&["A1", "A2", "A3"]), &HashMap::new());
+        assert_eq!(out, args(&["--A1 A2 A3x"]));
+    }
+
+    #[test]
+    fn single_arg_mode_range_and_separator() {
+        let cfg = cfg_with(&[
+            "--$(...args[1..4])x",
+            "--$(...args[1..4],,)x",
+            "--$(...args[1..4],www)x",
+            "--$(...args[1..4],)x",
+        ]);
+        let out = build_final_args(
+            &cfg,
+            &args(&["A1", "A2", "A3", "A4", "A5", "A6"]),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            out,
+            args(&["--A2 A3 A4x", "--A2,A3,A4x", "--A2wwwA3wwwA4x", "--A2A3A4x"])
+        );
+    }
+
+    #[test]
+    fn single_arg_mode_keeps_dollar_and_handles_empty_range() {
+        // join 后的内容里的 `$` 必须原样保留
+        let cfg = cfg_with(&["$(...args)"]);
+        let out = build_final_args(&cfg, &args(&["$X", "$Y"]), &HashMap::new());
+        assert_eq!(out, args(&["$X $Y"]));
+
+        // 无参数 / 空区间：不产生参数（与多参数模式一致）
+        let cfg = cfg_with(&[
+            "--$(...args)x",
+            "--$(...args[2..2])x",
+            "--$(...args[5..2])x",
+        ]);
+        let out = build_final_args(&cfg, &[], &HashMap::new());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn single_arg_mode_with_custom_symbol() {
+        let mut cfg = cfg_with(&["%(...args[1..3],,)"]);
+        cfg.var_symbol = "%".into();
+        let out = build_final_args(&cfg, &args(&["A1", "A2", "A3"]), &HashMap::new());
+        assert_eq!(out, args(&["A2,A3"]));
     }
 
     #[test]
@@ -349,10 +425,10 @@ mod tests {
 
     #[test]
     fn custom_symbol_substitutes_and_keeps_dollar_literal() {
-        let mut cfg = cfg_with(&["$HOME", "%arg1", "%(...args)"]);
+        let mut cfg = cfg_with(&["$HOME", "%arg1", "%{...args}"]);
         cfg.var_symbol = "%".into();
         let out = build_final_args(&cfg, &args(&["A", "$B"]), &HashMap::new());
-        // `$HOME` 不再是占位符（原样传递）；`%arg1` 替换为 A；`%(...args)` 展开为全部位置参数
+        // `$HOME` 不再是占位符（原样传递）；`%arg1` 替换为 A；`%{...args}` 逐个展开
         assert_eq!(out, args(&["$HOME", "A", "A", "$B"]));
     }
 
@@ -369,7 +445,7 @@ mod tests {
 
     #[test]
     fn custom_symbol_with_regex_metachar() {
-        let mut cfg = cfg_with(&["+arg1", "+(...args[1..2])"]);
+        let mut cfg = cfg_with(&["+arg1", "+{...args[1..2]}"]);
         cfg.var_symbol = "+".into();
         let out = build_final_args(&cfg, &args(&["X", "Y"]), &HashMap::new());
         assert_eq!(out, args(&["X", "Y"]));

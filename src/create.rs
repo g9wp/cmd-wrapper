@@ -5,7 +5,7 @@
 //! ```text
 //! cmd-wrapper --hardlink C:/msys64/usr/local/bin/sudo_fish.exe \
 //!     --prog=C:/msys64/usr/bin/fish.exe \
-//!     --args=-lc --args="$(...args)" \
+//!     --args=-lc --args="${...args}" \
 //!     --shell_quote=true --run_as_admin=true
 //! ```
 //! 会创建 `C:/msys64/usr/local/bin/sudo_fish.exe`（硬链接）和 `C:/msys64/usr/local/bin/sudo_fish.toml`。
@@ -250,7 +250,7 @@ fn print_usage() {
          \n\
          示例:\n\
          \x20 cmd-wrapper --hardlink C:/msys64/usr/local/bin/sudo_fish.exe --prog=C:/msys64/usr/bin/fish.exe \\\n\
-         \x20   --args=-lc --args=\"$(...args)\" --shell_quote=true --run_as_admin=true",
+         \x20   --args=-lc --args=\"${{...args}}\" --shell_quote=true --run_as_admin=true",
         std::env::args()
             .next()
             .map(|p| {
@@ -278,7 +278,7 @@ mod tests {
             "C:/msys64/usr/local/bin/sudo_fish.exe",
             "--prog=C:/msys64/usr/bin/fish.exe",
             "--args=-lc",
-            "--args=$(...args)",
+            "--args=${...args}",
             "--var_symbol=%",
             "--shell_quote=true",
             "--run_as_admin=true",
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(opts.prog, "C:/msys64/usr/bin/fish.exe");
         assert_eq!(
             opts.args.as_deref(),
-            Some(&["-lc".to_string(), "$(...args)".to_string()][..])
+            Some(&["-lc".to_string(), "${...args}".to_string()][..])
         );
         assert_eq!(opts.shell_quote, Some(true));
         assert_eq!(opts.run_as_admin, Some(true));
@@ -360,7 +360,7 @@ mod tests {
             "C:/msys64/usr/local/bin/sudo_fish.exe",
             "--prog=C:/msys64/usr/bin/fish.exe",
             "--args=-lc",
-            "--args=$(...args)",
+            "--args=${...args}",
             "--var_symbol=%",
             "--shell_quote=true",
             "--run_as_admin=true",
@@ -369,7 +369,7 @@ mod tests {
         let s = toml::to_string_pretty(&opts).unwrap();
         assert!(s.contains("prog = \"C:/msys64/usr/bin/fish.exe\""));
         assert!(s.contains("\"-lc\""));
-        assert!(s.contains("\"$(...args)\""));
+        assert!(s.contains("\"${...args}\""));
         assert!(s.contains("var_symbol = \"%\""));
         assert!(s.contains("shell_quote = true"));
         assert!(s.contains("run_as_admin = true"));

@@ -5,7 +5,7 @@
 ## 🚀 核心功能
 
 *   **无感知封装**：根据可执行文件名自动匹配 `.toml` 配置文件。
-*   **灵活的参数映射**：支持位置参数 (`$arg1`)、命名参数 (`-k v`) 、开关参数 (`-f`)和参数数组切片展开（`$(...args)` 和 `$(...args[1..3])`）。
+*   **灵活的参数映射**：支持位置参数 (`$arg1`)、命名参数 (`-k v`) 、开关参数 (`-f`)和参数数组展开（多参数 `${...args}` / 单参数 `$(...args)`）。
 *   **可自定义替换符号**：占位符前缀默认 `$`，可通过 `var_symbol` 改为 `%` 等，避免与 bash/fish 等脚本自身的 `$var` 语法冲突。
 *   **环境变量支持**：支持从系统环境、TOML 内部定义进行动态替换。
 *   **IO 流控制**：自由配置 `stdin`、`stdout`、`stderr` 的继承或丢弃。
@@ -53,7 +53,7 @@
 
 在 `args` 模板中，你可以使用以下占位符（下例以默认符号 `$` 演示）：
 
-> 若配置了 `var_symbol = "%"`，把下文的 `$` 换成 `%` 即可（如 `%arg1`、`%(...args)`）；此时 `$` 不再具有特殊含义，会原样传给目标程序。
+> 若配置了 `var_symbol = "%"`，把下文的 `$` 换成 `%` 即可（如 `%arg1`、`%{...args}`）；此时 `$` 不再具有特殊含义，会原样传给目标程序。
 
 1.  **位置参数**：
     *   `$arg1`, `$(arg2)`：代表用户输入的第 1, 2... 个非选项参数。
@@ -63,6 +63,13 @@
 3.  **环境变量**：
     *   `$HOME` / `${PATH}`：匹配系统环境变量。
     *   同时也匹配 TOML 中 `[env]` 部分定义的变量。
+4.  **参数数组展开**（区间写法 `[start..end]`，**从 0 开始、右开区间**，与 `$argN` 的 1 基编号不同）：
+    *   **多参数模式** `${...args}` / `${...args[1..4]}`：区间内每个参数各自替换，生成多个参数（前后缀会重复）。
+        例：模板 `"--${...args[1..4]}x"`、输入 `A1 A2 A3 A4 A5 A6` → `--A2x --A3x --A4x`
+    *   **单参数模式** `$(...args)` / `$(...args[1..4])` / `$(...args[1..4],<连接符>)`：先把区间内参数 join 成**一个**参数再整体替换；连接符默认空格，可用 `]` 后的 `,<连接符>` 指定（可为空串或任意文本）。
+        *   `"--$(...args[1..4])x"` → `--A2 A3 A4x`
+        *   `"--$(...args[1..4],,)x"` → `--A2,A3,A4x`
+        *   `"--$(...args[1..4],www)x"` → `--A2wwwA3wwwA4x`
 
 ---
 
@@ -75,7 +82,7 @@
 **aa.toml**
 ```toml
 prog = "C:/msys64/usr/bin/fish.exe"
-args = ["-lc", "xxx/yyy/a.fish", "-F=$f", "-d", "$d", "--long2=$long",  "$arg2", "xxx$(arg3)", "$arg1", "args:", "$(...args)", "args[1-3]:", "--a-$(...args[1..3])"]
+args = ["-lc", "xxx/yyy/a.fish", "-F=$f", "-d", "$d", "--long2=$long",  "$arg2", "xxx$(arg3)", "$arg1", "args:", "${...args}", "args[1-3]:", "--a-${...args[1..3]}"]
 log_file = "C:/logs/aa_exec.log"
 
 [env]
@@ -102,7 +109,7 @@ bash/fish 等脚本自身大量使用 `$var`，与默认的 `$` 占位符冲突�
 ```toml
 prog = "C:/msys64/usr/bin/bash.exe"
 var_symbol = "%"
-args = ["-lc", "%(...args)"]
+args = ["-lc", "%{...args}"]
 ```
 
 **执行命令：**
@@ -159,7 +166,7 @@ TOML 选项:
 ```bash
 cmd-wrapper --hardlink C:/msys64/usr/local/bin/sudo_fish.exe \
     --prog=C:/msys64/usr/bin/fish.exe \
-    --args=-lc --args='$(...args)' \
+    --args=-lc --args='${...args}' \
     --shell_quote=true --run_as_admin=true
 ```
 
@@ -168,7 +175,7 @@ cmd-wrapper --hardlink C:/msys64/usr/local/bin/sudo_fish.exe \
 ```toml
 # C:/msys64/usr/local/bin/sudo_fish.toml
 prog = "C:/msys64/usr/bin/fish.exe"
-args = ["-lc", "$(...args)"]
+args = ["-lc", "${...args}"]
 shell_quote = true
 run_as_admin = true
 ```
