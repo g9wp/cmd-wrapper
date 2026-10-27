@@ -422,6 +422,22 @@ mod tests {
     }
 
     #[test]
+    fn join_without_range_accepts_separator() {
+        // 区间可省略，连接符仍可在 `args` 后直接指定
+        let cfg = cfg_with(&[
+            "$(...args,www)",
+            "$(...args,,)",
+            "$(...args,)",
+            "$(...args, )",
+        ]);
+        let out = build_final_args(&cfg, &args(&["A1", "A2", "A3"]), &HashMap::new());
+        assert_eq!(
+            out,
+            args(&["A1wwwA2wwwA3", "A1,A2,A3", "A1A2A3", "A1 A2 A3"])
+        );
+    }
+
+    #[test]
     fn args_without_range_equals_empty_range() {
         // `...args` 与 `...args[..]` 必须完全等价（多参数/单参数、带连接符均如是）
         let cfg = cfg_with(&[
