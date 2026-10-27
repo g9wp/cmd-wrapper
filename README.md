@@ -43,7 +43,7 @@
 | `stdin` | String | 标准输入模式: `inherit`, `null`, `piped` | `inherit` |
 | `stdout` | String | 标准输出模式: `inherit`, `null`, `piped` | `inherit` |
 | `stderr` | String | 标准错误模式: `inherit`, `null`, `piped` | `inherit` |
-| `log_file` | String | 执行日志的保存路径。 | `None` |
+| `log_file` | String \| Bool | 执行日志路径；`true` = 与程序同名的 `.log`（如 `sf.exe` → `sf.log`），`false` = 不记录。 | `None` |
 | `run_as_admin` | Bool | **Windows**：以管理员身份运行目标程序。启用后每次运行会弹出 UAC 提权确认。非 Windows 平台忽略。 | `false` |
 | `named_args_mode` | String | 命名参数模式：`all` (解析所有 -k v，从位置参数中移除), `before_sep` (仅解析 `--` 之前的命名参数), `disabled` (禁用命名解析：所有输入全进 $argN),`keep` (复制模式：解析为 $key 变量，但位置参数列表中依然保留一份) | `all` |
 
@@ -156,9 +156,10 @@ TOML 选项:
   --env=<KEY=VALUE>       环境变量，可重复指定
   --shell_quote=<BOOL>
   --stdin / --stdout / --stderr=<模式>   inherit / null / piped
-  --log_file=<路径>
+  --log_file=<路径|true>  日志路径；true = 与程序同名的 .log
   --named_args_mode=<模式>
   --run_as_admin=<BOOL>
+  --full, --template      非 TOML 项：把全部选项写入配置（未启用的以注释补充）
 ```
 
 **示例**：创建 `sudo_fish.exe` 硬链接别名，让 fish 以管理员身份运行：
@@ -181,6 +182,24 @@ run_as_admin = true
 ```
 
 > 提示：创建模式仅在找不到配置时启用。若你的 `cmd-wrapper.exe` 旁边已有 `cmd-wrapper.toml`，请使用一份不带配置的干净副本作为"安装器"来创建别名。
+
+**`--full` / `--template` 模板**：加上该选项时会生成包含全部选项的配置，未指定的选项以注释形式（带默认值）补充，方便手动编辑：
+
+```toml
+prog = "C:/msys64/usr/bin/fish.exe"
+args = ["-lc", "${...args}"]
+
+# --- 未启用的选项（默认值，取消注释即可启用）---
+# var_symbol = "$"  # 变量替换前缀符号
+# env = {}  # 额外环境变量，如 { KEY = "VALUE" }
+# shell_quote = false  # 对替换后的变量做引号转义
+# stdin = "inherit"  # inherit / null / piped
+# stdout = "inherit"  # inherit / null / piped
+# stderr = "inherit"  # inherit / null / piped
+# log_file = false  # true = 与程序同名的 .log；或写具体路径
+# run_as_admin = false  # Windows: 以管理员身份运行
+# named_args_mode = "all"  # all / before_sep / disabled / keep
+```
 
 ---
 

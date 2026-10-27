@@ -1,10 +1,11 @@
 use anyhow::{Context, Result, bail};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 // Windows 管理员提权（UAC）支持模块
@@ -29,7 +30,7 @@ struct Config {
     stdout: String,
     #[serde(default = "default_io")]
     stderr: String,
-    log_file: Option<String>,
+    log_file: Option<LogFile>,
     #[serde(default)]
     run_as_admin: bool,
     #[serde(default = "default_mode")]
@@ -38,6 +39,27 @@ struct Config {
     /// 脚本自身的 `$var` 语法冲突。
     #[serde(default = "default_var_symbol")]
     var_symbol: String,
+}
+
+/// `log_file` 的取值：路径字符串，或布尔简写
+/// - `true` → 与配置同名的 `.log` 文件（如 `sf.toml` → `sf.log`）
+/// - `false` → 不写日志
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(untagged)]
+enum LogFile {
+    Path(String),
+    Enabled(bool),
+}
+
+impl LogFile {
+    /// 解析出实际日志路径；`None` 表示不写日志
+    fn resolve(&self, config_path: &Path) -> Option<PathBuf> {
+        match self {
+            LogFile::Path(p) => Some(PathBuf::from(p)),
+            LogFile::Enabled(true) => Some(config_path.with_extension("log")),
+            LogFile::Enabled(false) => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -118,12 +140,16 @@ fn main() -> Result<()> {
     // 3. 构建最终参数列表
     let final_args = build_final_args(&config, &pos_args, &named_args);
 
-    // 4. 配置日志
-    if let Some(log_path) = &config.log_file {
+    // 4. 配置日志（`true` = 与配置同名的 .log；`false` / 未设置 = 不记录）
+    if let Some(log_path) = config
+        .log_file
+        .as_ref()
+        .and_then(|l| l.resolve(&config_path))
+    {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(log_path)?;
+            .open(&log_path)?;
         writeln!(
             file,
             "[{:?}] Executing: {} {}",
@@ -474,5 +500,34 @@ mod tests {
         cfg.var_symbol = "+".into();
         let out = build_final_args(&cfg, &args(&["X", "Y"]), &HashMap::new());
         assert_eq!(out, args(&["X", "Y"]));
+    }
+
+    #[test]
+    fn log_file_true_resolves_to_sibling_log() {
+        let cfg: Config = toml::from_str("prog = \"p\"\nlog_file = true\n").unwrap();
+        let resolved = cfg
+            .log_file
+            .as_ref()
+            .unwrap()
+            .resolve(Path::new("G:/dev/bin/sf.toml"));
+        assert_eq!(resolved, Some(PathBuf::from("G:/dev/bin/sf.log")));
+    }
+
+    #[test]
+    fn log_file_path_and_false() {
+        let cfg: Config = toml::from_str("prog = \"p\"\nlog_file = \"C:/logs/x.log\"\n").unwrap();
+        assert_eq!(
+            cfg.log_file.as_ref().unwrap().resolve(Path::new("a.toml")),
+            Some(PathBuf::from("C:/logs/x.log"))
+        );
+
+        let cfg: Config = toml::from_str("prog = \"p\"\nlog_file = false\n").unwrap();
+        assert_eq!(
+            cfg.log_file.as_ref().unwrap().resolve(Path::new("a.toml")),
+            None
+        );
+
+        let cfg: Config = toml::from_str("prog = \"p\"\n").unwrap();
+        assert!(cfg.log_file.is_none());
     }
 }

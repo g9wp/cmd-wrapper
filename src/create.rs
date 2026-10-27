@@ -15,6 +15,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::LogFile;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum LinkMode {
     Hard,
@@ -41,11 +43,14 @@ struct CreateOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     stderr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    log_file: Option<String>,
+    log_file: Option<LogFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_as_admin: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     named_args_mode: Option<String>,
+    /// 仅用于 `--full`：把全部选项写入配置（未启用的以注释补充），不参与序列化
+    #[serde(skip)]
+    full: bool,
 }
 
 /// 创建模式的入口（由 main 在未找到同名 toml 时调用）
@@ -97,8 +102,12 @@ pub fn run(exe_path: &Path) -> Result<()> {
     }
     println!("已创建别名: {} ({})", target.display(), mode_name(mode));
 
-    // 2. 生成别名对应的 toml
-    let toml_str = toml::to_string_pretty(&opts)?;
+    // 2. 生成别名对应的 toml（`--full` 时附带全部未启用选项的注释模板）
+    let toml_str = if opts.full {
+        render_full(&opts)
+    } else {
+        toml::to_string_pretty(&opts)?
+    };
     std::fs::write(&config_path, &toml_str)
         .with_context(|| format!("无法写入配置: {}", config_path.display()))?;
     println!("已创建配置: {}", config_path.display());
@@ -121,6 +130,7 @@ fn parse_args_from(args: &[String]) -> Result<(LinkMode, String, CreateOptions)>
         log_file: None,
         run_as_admin: None,
         named_args_mode: None,
+        full: false,
     };
 
     for arg in args {
@@ -135,6 +145,10 @@ fn parse_args_from(args: &[String]) -> Result<(LinkMode, String, CreateOptions)>
             }
             "-c" | "--copy" => {
                 mode = LinkMode::Copy;
+                continue;
+            }
+            "--full" | "--template" => {
+                opts.full = true;
                 continue;
             }
             _ => {}
@@ -165,7 +179,13 @@ fn parse_args_from(args: &[String]) -> Result<(LinkMode, String, CreateOptions)>
                 "--stdin" => opts.stdin = Some(value.to_string()),
                 "--stdout" => opts.stdout = Some(value.to_string()),
                 "--stderr" => opts.stderr = Some(value.to_string()),
-                "--log_file" => opts.log_file = Some(value.to_string()),
+                "--log_file" => {
+                    opts.log_file = Some(match value.to_ascii_lowercase().as_str() {
+                        "true" | "yes" | "on" | "1" => LogFile::Enabled(true),
+                        "false" | "no" | "off" | "0" => LogFile::Enabled(false),
+                        _ => LogFile::Path(value.to_string()),
+                    });
+                }
                 "--run_as_admin" => opts.run_as_admin = Some(parse_bool(value, "--run_as_admin")?),
                 "--named_args_mode" => opts.named_args_mode = Some(value.to_string()),
                 _ => bail!("未知选项: {arg}"),
@@ -206,6 +226,118 @@ fn mode_name(m: LinkMode) -> &'static str {
     }
 }
 
+/// 生成包含全部选项的配置模板：已启用的选项正常写入，
+/// 未启用的按默认值以注释补充。
+fn render_full(opts: &CreateOptions) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("prog = {}\n", toml_str(&opts.prog)));
+    if let Some(args) = &opts.args {
+        let items: Vec<String> = args.iter().map(|a| toml_str(a)).collect();
+        out.push_str(&format!("args = [{}]\n", items.join(", ")));
+    }
+    if let Some(v) = &opts.var_symbol {
+        out.push_str(&format!("var_symbol = {}\n", toml_str(v)));
+    }
+    if let Some(env) = &opts.env {
+        out.push_str(&format!("env = {}\n", toml_inline_table(env)));
+    }
+    if let Some(v) = opts.shell_quote {
+        out.push_str(&format!("shell_quote = {v}\n"));
+    }
+    if let Some(v) = &opts.stdin {
+        out.push_str(&format!("stdin = {}\n", toml_str(v)));
+    }
+    if let Some(v) = &opts.stdout {
+        out.push_str(&format!("stdout = {}\n", toml_str(v)));
+    }
+    if let Some(v) = &opts.stderr {
+        out.push_str(&format!("stderr = {}\n", toml_str(v)));
+    }
+    if let Some(v) = &opts.log_file {
+        let repr = match v {
+            LogFile::Path(p) => toml_str(p),
+            LogFile::Enabled(b) => b.to_string(),
+        };
+        out.push_str(&format!("log_file = {repr}\n"));
+    }
+    if let Some(v) = opts.run_as_admin {
+        out.push_str(&format!("run_as_admin = {v}\n"));
+    }
+    if let Some(v) = &opts.named_args_mode {
+        out.push_str(&format!("named_args_mode = {}\n", toml_str(v)));
+    }
+
+    // 未启用的选项：按默认值注释补充
+    let mut commented = String::new();
+    if opts.args.is_none() {
+        commented.push_str("# args = []  # 参数模板，可重复指定\n");
+    }
+    if opts.var_symbol.is_none() {
+        commented.push_str("# var_symbol = \"$\"  # 变量替换前缀符号\n");
+    }
+    if opts.env.is_none() {
+        commented.push_str("# env = {}  # 额外环境变量，如 { KEY = \"VALUE\" }\n");
+    }
+    if opts.shell_quote.is_none() {
+        commented.push_str("# shell_quote = false  # 对替换后的变量做引号转义\n");
+    }
+    if opts.stdin.is_none() {
+        commented.push_str("# stdin = \"inherit\"  # inherit / null / piped\n");
+    }
+    if opts.stdout.is_none() {
+        commented.push_str("# stdout = \"inherit\"  # inherit / null / piped\n");
+    }
+    if opts.stderr.is_none() {
+        commented.push_str("# stderr = \"inherit\"  # inherit / null / piped\n");
+    }
+    if opts.log_file.is_none() {
+        commented.push_str("# log_file = false  # true = 与程序同名的 .log；或写具体路径\n");
+    }
+    if opts.run_as_admin.is_none() {
+        commented.push_str("# run_as_admin = false  # Windows: 以管理员身份运行\n");
+    }
+    if opts.named_args_mode.is_none() {
+        commented.push_str("# named_args_mode = \"all\"  # all / before_sep / disabled / keep\n");
+    }
+    if !commented.is_empty() {
+        out.push_str("\n# --- 未启用的选项（默认值，取消注释即可启用）---\n");
+        out.push_str(&commented);
+    }
+    out
+}
+
+/// TOML 基本字符串（转义反斜杠、引号与控制字符）
+fn toml_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// TOML 内联表（按键排序，保证输出稳定）
+fn toml_inline_table(map: &HashMap<String, String>) -> String {
+    if map.is_empty() {
+        return "{}".to_string();
+    }
+    let mut entries: Vec<(&String, &String)> = map.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    let body: Vec<String> = entries
+        .iter()
+        .map(|(k, v)| format!("{} = {}", toml_str(k), toml_str(v)))
+        .collect();
+    format!("{{ {} }}", body.join(", "))
+}
+
 #[cfg(windows)]
 fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(src, dst)
@@ -244,9 +376,10 @@ fn print_usage() {
          \x20 --stdin=<模式>          标准输入: inherit / null / piped\n\
          \x20 --stdout=<模式>         标准输出: inherit / null / piped\n\
          \x20 --stderr=<模式>         标准错误: inherit / null / piped\n\
-         \x20 --log_file=<路径>       执行日志保存路径\n\
+         \x20 --log_file=<路径|true>  执行日志路径；true = 与程序同名的 .log\n\
          \x20 --named_args_mode=<模式> 命名参数模式\n\
          \x20 --run_as_admin=<BOOL>   Windows 下以管理员身份运行\n\
+         \x20 --full, --template      非 TOML 项：把全部选项写入配置（未启用的注释掉）\n\
          \n\
          示例:\n\
          \x20 cmd-wrapper --hardlink C:/msys64/usr/local/bin/sudo_fish.exe --prog=C:/msys64/usr/bin/fish.exe \\\n\
@@ -328,7 +461,10 @@ mod tests {
         assert_eq!(opts.stdin.as_deref(), Some("null"));
         assert_eq!(opts.stdout.as_deref(), Some("piped"));
         assert_eq!(opts.stderr.as_deref(), Some("inherit"));
-        assert_eq!(opts.log_file.as_deref(), Some("C:/logs/x.log"));
+        assert_eq!(
+            opts.log_file,
+            Some(LogFile::Path("C:/logs/x.log".to_string()))
+        );
         assert_eq!(opts.named_args_mode.as_deref(), Some("keep"));
     }
 
@@ -352,6 +488,64 @@ mod tests {
     #[test]
     fn empty_var_symbol_is_error() {
         assert!(parse(&["t.exe", "--prog=p", "--var_symbol="]).is_err());
+    }
+
+    #[test]
+    fn template_is_alias_for_full() {
+        let (_, _, opts) = parse(&["t.exe", "--prog=p", "--template"]).unwrap();
+        assert!(opts.full);
+    }
+
+    #[test]
+    fn log_file_true_shorthand() {
+        let (_, _, opts) = parse(&["t.exe", "--prog=p", "--log_file=true"]).unwrap();
+        assert_eq!(opts.log_file, Some(LogFile::Enabled(true)));
+        let (_, _, opts) = parse(&["t.exe", "--prog=p", "--log_file=false"]).unwrap();
+        assert_eq!(opts.log_file, Some(LogFile::Enabled(false)));
+    }
+
+    #[test]
+    fn full_output_comments_unset_options() {
+        let (_, _, opts) = parse(&["t.exe", "--prog=p", "--args=-lc", "--full"]).unwrap();
+        assert!(opts.full);
+        let s = render_full(&opts);
+        assert!(s.contains("prog = \"p\""));
+        assert!(s.contains("args = [\"-lc\"]"));
+        assert!(s.contains("# shell_quote = false"));
+        assert!(s.contains("# var_symbol = \"$\""));
+        assert!(s.contains("# log_file = false"));
+        assert!(!s.lines().any(|l| l.starts_with("shell_quote")));
+        // 生成的文件必须能被正常解析
+        let cfg: crate::Config = toml::from_str(&s).unwrap();
+        assert_eq!(cfg.prog, "p");
+        assert_eq!(cfg.args, vec!["-lc".to_string()]);
+        assert!(cfg.log_file.is_none());
+    }
+
+    #[test]
+    fn full_output_keeps_enabled_options_active() {
+        let (_, _, opts) = parse(&[
+            "t.exe",
+            "--prog=p",
+            "--shell_quote=true",
+            "--log_file=true",
+            "--env=A=1",
+            "--var_symbol=%",
+            "--full",
+        ])
+        .unwrap();
+        let s = render_full(&opts);
+        assert!(s.contains("shell_quote = true"));
+        assert!(s.contains("log_file = true"));
+        assert!(s.contains("env = { \"A\" = \"1\" }"));
+        assert!(s.contains("var_symbol = \"%\""));
+        assert!(!s.contains("# shell_quote"));
+        assert!(!s.contains("# log_file"));
+        let cfg: crate::Config = toml::from_str(&s).unwrap();
+        assert!(cfg.shell_quote);
+        assert_eq!(cfg.var_symbol, "%");
+        assert_eq!(cfg.env.get("A"), Some(&"1".to_string()));
+        assert_eq!(cfg.log_file, Some(LogFile::Enabled(true)));
     }
 
     #[test]
