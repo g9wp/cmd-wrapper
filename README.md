@@ -6,6 +6,7 @@
 
 *   **无感知封装**：根据可执行文件名自动匹配 `.toml` 配置文件。
 *   **灵活的参数映射**：支持位置参数 (`$arg1`)、命名参数 (`-k v`) 、开关参数 (`-f`)和参数数组切片展开（`$(...args)` 和 `$(...args[1..3])`）。
+*   **可自定义替换符号**：占位符前缀默认 `$`，可通过 `var_symbol` 改为 `%` 等，避免与 bash/fish 等脚本自身的 `$var` 语法冲突。
 *   **环境变量支持**：支持从系统环境、TOML 内部定义进行动态替换。
 *   **IO 流控制**：自由配置 `stdin`、`stdout`、`stderr` 的继承或丢弃。
 *   **Shell 转义保护**：可选的 `shell_quote` 模式，防止带空格的参数解析失败。
@@ -36,6 +37,7 @@
 | :--- | :--- | :--- | :--- |
 | `prog` | String | **必填**。实际要执行的程序路径或名称。 | - |
 | `args` | Array | 要传递给程序的参数模板列表。支持变量替换。 | `[]` |
+| `var_symbol` | String | 变量替换前缀符号。改为 `%` 等可避免与目标脚本的 `$var` 语法冲突（此时 `$` 原样传递）。 | `"$"` |
 | `env` | Table | 键值对映射，定义额外的环境变量。 | `{}` |
 | `shell_quote` | Bool | 是否自动对替换后的变量进行引号转义。 | `false` |
 | `stdin` | String | 标准输入模式: `inherit`, `null`, `piped` | `inherit` |
@@ -49,7 +51,9 @@
 
 ## 🔍 变量替换规则
 
-在 `args` 模板中，你可以使用以下占位符：
+在 `args` 模板中，你可以使用以下占位符（下例以默认符号 `$` 演示）：
+
+> 若配置了 `var_symbol = "%"`，把下文的 `$` 换成 `%` 即可（如 `%arg1`、`%(...args)`）；此时 `$` 不再具有特殊含义，会原样传给目标程序。
 
 1.  **位置参数**：
     *   `$arg1`, `$(arg2)`：代表用户输入的第 1, 2... 个非选项参数。
@@ -90,6 +94,26 @@ VERSION=1.0.0 C:/msys64/usr/bin/fish.exe -lc xxx/yyy/a.fish -F=true -d ddd --lon
 
 ---
 
+### 场景：包装 Bash 脚本（保留脚本内的 `$var`）
+
+bash/fish 等脚本自身大量使用 `$var`，与默认的 `$` 占位符冲突。把 `var_symbol` 改成 `%` 即可：
+
+**run_sh.toml**
+```toml
+prog = "C:/msys64/usr/bin/bash.exe"
+var_symbol = "%"
+args = ["-lc", "%(...args)"]
+```
+
+**执行命令：**
+```bash
+./run_sh.exe 'for i in 1 2 3; do echo $i; done'
+```
+
+bash 收到的是原样的 `for i in 1 2 3; do echo $i; done`，`$i` 不会被本工具替换。
+
+---
+
 ### 场景：带重定向的 Windows CMD 包装
 
 **task.toml**
@@ -121,6 +145,7 @@ shell_quote = false
 TOML 选项:
   --prog=<程序>           必填，实际执行的程序路径或名称
   --args=<参数>           参数模板，可重复指定
+  --var_symbol=<符号>     变量替换前缀符号（默认 "$"）
   --env=<KEY=VALUE>       环境变量，可重复指定
   --shell_quote=<BOOL>
   --stdin / --stdout / --stderr=<模式>   inherit / null / piped
@@ -170,5 +195,6 @@ run_as_admin = true
 1.  **权限**：如果配置了 `log_file`，请确保当前用户有权写入该路径。
 2.  **Shell 转义**：如果你手动在 `args` 中写了管道符号（如 `|`, `>`），必须将 `shell_quote` 设为 `false`，否则这些符号会被当作普通文本参数传递给程序。
 3.  **安全性**：在处理不受信任的用户输入时，请谨慎关闭 `shell_quote` 以防命令注入。
-4.  **UAC 提权**：启用 `run_as_admin = true` 后每次运行都会弹出系统 UAC 确认框（受 Windows 策略限制，程序无法自动绕过）；提权后的目标进程运行在原始终端中，请勿提前关闭原窗口。
+4.  **替换符号**：`var_symbol` 请避开目标脚本自身的语法字符（例如 cmd 用 `%VAR%`、bash/fish 用 `$VAR`），否则容易与脚本里的变量写法混淆。
+5.  **UAC 提权**：启用 `run_as_admin = true` 后每次运行都会弹出系统 UAC 确认框（受 Windows 策略限制，程序无法自动绕过）；提权后的目标进程运行在原始终端中，请勿提前关闭原窗口。
 ```

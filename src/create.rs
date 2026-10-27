@@ -29,6 +29,8 @@ struct CreateOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     args: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    var_symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     shell_quote: Option<bool>,
@@ -110,6 +112,7 @@ fn parse_args_from(args: &[String]) -> Result<(LinkMode, String, CreateOptions)>
     let mut opts = CreateOptions {
         prog: String::new(),
         args: None,
+        var_symbol: None,
         env: None,
         shell_quote: None,
         stdin: None,
@@ -144,6 +147,12 @@ fn parse_args_from(args: &[String]) -> Result<(LinkMode, String, CreateOptions)>
                     .args
                     .get_or_insert_with(Vec::new)
                     .push(value.to_string()),
+                "--var_symbol" => {
+                    if value.is_empty() {
+                        bail!("--var_symbol 不能为空");
+                    }
+                    opts.var_symbol = Some(value.to_string());
+                }
                 "--env" => {
                     let (k, v) = value
                         .split_once('=')
@@ -229,6 +238,7 @@ fn print_usage() {
          TOML 选项（均可转换为命令行参数）:\n\
          \x20 --prog=<程序>          必填，实际执行的程序路径或名称\n\
          \x20 --args=<参数>          参数模板，可重复指定\n\
+         \x20 --var_symbol=<符号>    变量替换前缀符号（默认 \"$\"）\n\
          \x20 --env=<KEY=VALUE>      环境变量，可重复指定\n\
          \x20 --shell_quote=<BOOL>   是否对替换后的变量引号转义\n\
          \x20 --stdin=<模式>          标准输入: inherit / null / piped\n\
@@ -269,6 +279,7 @@ mod tests {
             "--prog=C:/msys64/usr/bin/fish.exe",
             "--args=-lc",
             "--args=$(...args)",
+            "--var_symbol=%",
             "--shell_quote=true",
             "--run_as_admin=true",
         ])
@@ -282,6 +293,7 @@ mod tests {
         );
         assert_eq!(opts.shell_quote, Some(true));
         assert_eq!(opts.run_as_admin, Some(true));
+        assert_eq!(opts.var_symbol.as_deref(), Some("%"));
         assert!(opts.env.is_none());
         assert!(opts.log_file.is_none());
     }
@@ -338,12 +350,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_var_symbol_is_error() {
+        assert!(parse(&["t.exe", "--prog=p", "--var_symbol="]).is_err());
+    }
+
+    #[test]
     fn toml_serialization_shape() {
         let (_, _, opts) = parse(&[
             "C:/msys64/usr/local/bin/sudo_fish.exe",
             "--prog=C:/msys64/usr/bin/fish.exe",
             "--args=-lc",
             "--args=$(...args)",
+            "--var_symbol=%",
             "--shell_quote=true",
             "--run_as_admin=true",
         ])
@@ -352,6 +370,7 @@ mod tests {
         assert!(s.contains("prog = \"C:/msys64/usr/bin/fish.exe\""));
         assert!(s.contains("\"-lc\""));
         assert!(s.contains("\"$(...args)\""));
+        assert!(s.contains("var_symbol = \"%\""));
         assert!(s.contains("shell_quote = true"));
         assert!(s.contains("run_as_admin = true"));
         // 未指定的字段不写入

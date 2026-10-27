@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -34,6 +34,10 @@ struct Config {
     run_as_admin: bool,
     #[serde(default = "default_mode")]
     named_args_mode: NamedArgsMode,
+    /// 变量替换前缀符号（默认 `$`）。可改为 `%` 等，避免与 bash/fish 等
+    /// 脚本自身的 `$var` 语法冲突。
+    #[serde(default = "default_var_symbol")]
+    var_symbol: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -47,6 +51,10 @@ enum NamedArgsMode {
 
 fn default_mode() -> NamedArgsMode {
     NamedArgsMode::All
+}
+
+fn default_var_symbol() -> String {
+    "$".to_string()
 }
 
 fn default_io() -> String {
@@ -88,6 +96,11 @@ fn main() -> Result<()> {
     let config_content = std::fs::read_to_string(&config_path)
         .with_context(|| format!("无法读取配置文件: {:?}", config_path))?;
     let config: Config = toml::from_str(&config_content)?;
+
+    // 替换符号不能为空，否则正则 `(\w+)` 会退化为匹配任意单词
+    if config.var_symbol.is_empty() {
+        bail!("配置项 `var_symbol` 不能为空（默认 \"$\"）");
+    }
 
     // Windows: 按配置以管理员身份运行（触发 UAC 提权后重新启动自身）
     #[cfg(target_os = "windows")]
@@ -205,8 +218,13 @@ fn parse_user_args(
 /// 核心替换逻辑：处理变量、位置参数、切片展开
 fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String>) -> Vec<String> {
     let mut result = Vec::new();
-    let re_var = Regex::new(r"\$(\w+)|\$\((\w+)\)").unwrap();
-    let re_slice = Regex::new(r"\$\(\.\.\.args\[(\d*)\.\.(\d*)\]\)|\$\(\.\.\.args\)").unwrap();
+    // 符号需先转义才能拼进正则（如 `$`、`(`、`+` 等）
+    let sym = regex::escape(&cfg.var_symbol);
+    let re_var = Regex::new(&format!(r"{sym}(\w+)|{sym}\((\w+)\)")).unwrap();
+    let re_slice = Regex::new(&format!(
+        r"{sym}\(\.\.\.args\[(\d*)\.\.(\d*)\]\)|{sym}\(\.\.\.args\)"
+    ))
+    .unwrap();
 
     for tpl in &cfg.args {
         // 处理展开语法 $...args[start..end]
@@ -290,6 +308,7 @@ mod tests {
             log_file: None,
             run_as_admin: false,
             named_args_mode: NamedArgsMode::All,
+            var_symbol: "$".into(),
         }
     }
 
@@ -326,5 +345,33 @@ mod tests {
         let cfg = cfg_with(&["$arg1"]);
         let out = build_final_args(&cfg, &args(&["$HOME/$x"]), &HashMap::new());
         assert_eq!(out, args(&["$HOME/$x"]));
+    }
+
+    #[test]
+    fn custom_symbol_substitutes_and_keeps_dollar_literal() {
+        let mut cfg = cfg_with(&["$HOME", "%arg1", "%(...args)"]);
+        cfg.var_symbol = "%".into();
+        let out = build_final_args(&cfg, &args(&["A", "$B"]), &HashMap::new());
+        // `$HOME` 不再是占位符（原样传递）；`%arg1` 替换为 A；`%(...args)` 展开为全部位置参数
+        assert_eq!(out, args(&["$HOME", "A", "A", "$B"]));
+    }
+
+    #[test]
+    fn custom_symbol_named_and_env() {
+        let mut cfg = cfg_with(&["%user", "%VERSION"]);
+        cfg.var_symbol = "%".into();
+        cfg.env.insert("VERSION".into(), "1.0".into());
+        let mut named = HashMap::new();
+        named.insert("user".to_string(), "admin".to_string());
+        let out = build_final_args(&cfg, &[], &named);
+        assert_eq!(out, args(&["admin", "1.0"]));
+    }
+
+    #[test]
+    fn custom_symbol_with_regex_metachar() {
+        let mut cfg = cfg_with(&["+arg1", "+(...args[1..2])"]);
+        cfg.var_symbol = "+".into();
+        let out = build_final_args(&cfg, &args(&["X", "Y"]), &HashMap::new());
+        assert_eq!(out, args(&["X", "Y"]));
     }
 }
