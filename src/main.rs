@@ -231,19 +231,21 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
     for tpl in &cfg.args {
         // 多参数模式：区间内每个参数各自生成一个参数（前后缀重复）
         if let Some(caps) = re_multi.captures(tpl) {
+            // 区间为 1 基闭区间，与 `$argN` 一致（`[2..4]` = 第 2~4 个参数）
             let start = caps
                 .get(1)
                 .and_then(|m| m.as_str().parse::<usize>().ok())
-                .unwrap_or(0);
+                .unwrap_or(1);
             let end = caps
                 .get(2)
                 .and_then(|m| m.as_str().parse::<usize>().ok())
                 .unwrap_or(pos.len());
 
-            let actual_end = end.min(pos.len());
-            // end <= start（如 `[5..2]`）时不产生参数，避免切片 panic
-            if start < actual_end {
-                for item in &pos[start..actual_end] {
+            let start_idx = start.saturating_sub(1);
+            let end_excl = end.min(pos.len());
+            // 空区间 / 倒序区间（如 `[5..2]`）时不产生参数，避免切片 panic
+            if start_idx < end_excl {
+                for item in &pos[start_idx..end_excl] {
                     // 用闭包做字面替换：regex 的字符串替换会把 item 里的 `$` 当作捕获组引用
                     // （`$i` → 空、`$$` → `$`、`$1` → 第 1 个捕获组），必须原样插入外部参数
                     let expanded = re_multi.replace_all(tpl, |_: &regex::Captures| item.as_str());
@@ -255,19 +257,21 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
 
         // 单参数模式：先把区间内的参数 join 成一个参数，再整体替换
         if let Some(caps) = re_join.captures(tpl) {
+            // 区间为 1 基闭区间，与 `$argN` 一致
             let start = caps
                 .get(1)
                 .and_then(|m| m.as_str().parse::<usize>().ok())
-                .unwrap_or(0);
+                .unwrap_or(1);
             let end = caps
                 .get(2)
                 .and_then(|m| m.as_str().parse::<usize>().ok())
                 .unwrap_or(pos.len());
             let sep = caps.get(3).map(|m| m.as_str()).unwrap_or(" ");
 
-            let actual_end = end.min(pos.len());
-            if start < actual_end {
-                let joined = pos[start..actual_end].join(sep);
+            let start_idx = start.saturating_sub(1);
+            let end_excl = end.min(pos.len());
+            if start_idx < end_excl {
+                let joined = pos[start_idx..end_excl].join(sep);
                 let expanded = re_join.replace_all(tpl, |_: &regex::Captures| joined.as_str());
                 result.push(maybe_quote(&expanded, cfg.shell_quote));
             }
@@ -375,10 +379,10 @@ mod tests {
     #[test]
     fn single_arg_mode_range_and_separator() {
         let cfg = cfg_with(&[
-            "--$(...args[1..4])x",
-            "--$(...args[1..4],,)x",
-            "--$(...args[1..4],www)x",
-            "--$(...args[1..4],)x",
+            "--$(...args[2..4])x",
+            "--$(...args[2..4],,)x",
+            "--$(...args[2..4],www)x",
+            "--$(...args[2..4],)x",
         ]);
         let out = build_final_args(
             &cfg,
@@ -388,6 +392,27 @@ mod tests {
         assert_eq!(
             out,
             args(&["--A2 A3 A4x", "--A2,A3,A4x", "--A2wwwA3wwwA4x", "--A2A3A4x"])
+        );
+    }
+
+    #[test]
+    fn range_is_one_based_inclusive() {
+        // 与 $argN 一致：args[1..3] == 第 1~3 个参数，缺省界限为 1 / 末尾
+        let cfg = cfg_with(&[
+            "${...args[1..3]}",
+            "$(...args[1..3],,)",
+            "${...args[3..3]}",
+            "${...args[..]}",
+            "${...args[2..]}",
+            "${...args[..2]}",
+        ]);
+        let out = build_final_args(&cfg, &args(&["A1", "A2", "A3", "A4"]), &HashMap::new());
+        assert_eq!(
+            out,
+            args(&[
+                "A1", "A2", "A3", "A1,A2,A3", "A3", "A1", "A2", "A3", "A4", "A2", "A3", "A4", "A1",
+                "A2",
+            ])
         );
     }
 
@@ -410,7 +435,7 @@ mod tests {
 
     #[test]
     fn single_arg_mode_with_custom_symbol() {
-        let mut cfg = cfg_with(&["%(...args[1..3],,)"]);
+        let mut cfg = cfg_with(&["%(...args[2..3],,)"]);
         cfg.var_symbol = "%".into();
         let out = build_final_args(&cfg, &args(&["A1", "A2", "A3"]), &HashMap::new());
         assert_eq!(out, args(&["A2,A3"]));
@@ -445,7 +470,7 @@ mod tests {
 
     #[test]
     fn custom_symbol_with_regex_metachar() {
-        let mut cfg = cfg_with(&["+arg1", "+{...args[1..2]}"]);
+        let mut cfg = cfg_with(&["+arg1", "+{...args[2..2]}"]);
         cfg.var_symbol = "+".into();
         let out = build_final_args(&cfg, &args(&["X", "Y"]), &HashMap::new());
         assert_eq!(out, args(&["X", "Y"]));
