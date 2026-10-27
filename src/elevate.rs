@@ -299,6 +299,6 @@ mod tests {
     #[test]
     fn elev_arg_prefix() {
         assert!(is_elev_arg("--__cmd-wrapper-parent=123"));
-        assert!(!is_elev_arg("--prog=x"));
+        assert!(!is_elev_arg("--program=x"));
     }
 }

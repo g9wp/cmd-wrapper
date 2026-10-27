@@ -17,13 +17,13 @@ mod create;
 
 #[derive(Debug, Deserialize)]
 struct Config {
-    prog: String,
+    program: String,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
-    shell_quote: bool,
+    quote_args: bool,
     #[serde(default = "default_io")]
     stdin: String,
     #[serde(default = "default_io")]
@@ -34,11 +34,11 @@ struct Config {
     #[serde(default)]
     run_as_admin: bool,
     #[serde(default = "default_mode")]
-    named_args_mode: NamedArgsMode,
+    options_mode: OptionsMode,
     /// 变量替换前缀符号（默认 `$`）。可改为 `%` 等，避免与 bash/fish 等
     /// 脚本自身的 `$var` 语法冲突。
-    #[serde(default = "default_var_symbol")]
-    var_symbol: String,
+    #[serde(default = "default_symbol")]
+    symbol: String,
 }
 
 /// `log_file` 的取值：路径字符串，或布尔简写
@@ -64,18 +64,18 @@ impl LogFile {
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum NamedArgsMode {
-    All,       // 默认：解析所有 -k v，从位置参数中移除
-    BeforeSep, // 仅解析 `--` 之前的命名参数
-    Disabled,  // 禁用命名解析：所有输入全进 $argN
-    Keep,      // 复制模式：解析为 $key 变量，但位置参数列表中依然保留一份
+enum OptionsMode {
+    Parse,          // 默认：解析所有 -k v，从位置参数中移除
+    BeforeDashdash, // 仅解析 `--` 之前的带名字参数
+    Off,            // 禁用解析：所有输入全进 $argN
+    Keep,           // 复制模式：解析为 $key 变量，但位置参数列表中依然保留一份
 }
 
-fn default_mode() -> NamedArgsMode {
-    NamedArgsMode::All
+fn default_mode() -> OptionsMode {
+    OptionsMode::Parse
 }
 
-fn default_var_symbol() -> String {
+fn default_symbol() -> String {
     "$".to_string()
 }
 
@@ -120,8 +120,8 @@ fn main() -> Result<()> {
     let config: Config = toml::from_str(&config_content)?;
 
     // 替换符号不能为空，否则正则 `(\w+)` 会退化为匹配任意单词
-    if config.var_symbol.is_empty() {
-        bail!("配置项 `var_symbol` 不能为空（默认 \"$\"）");
+    if config.symbol.is_empty() {
+        bail!("配置项 `symbol` 不能为空（默认 \"$\"）");
     }
 
     // Windows: 按配置以管理员身份运行（触发 UAC 提权后重新启动自身）
@@ -135,7 +135,7 @@ fn main() -> Result<()> {
     }
 
     // 2. 解析用户输入的参数
-    let (pos_args, named_args) = parse_user_args(&user_args, &config.named_args_mode);
+    let (pos_args, named_args) = parse_user_args(&user_args, &config.options_mode);
 
     // 3. 构建最终参数列表
     let final_args = build_final_args(&config, &pos_args, &named_args);
@@ -154,13 +154,13 @@ fn main() -> Result<()> {
             file,
             "[{:?}] Executing: {} {}",
             chrono::Local::now(),
-            config.prog,
+            config.program,
             final_args.join("ˑˑ")
         )?;
     }
 
     // 5. 执行程序
-    let mut cmd = Command::new(&config.prog);
+    let mut cmd = Command::new(&config.program);
     cmd.args(&final_args)
         .envs(&config.env)
         .stdin(parse_stdio(&config.stdin))
@@ -169,17 +169,14 @@ fn main() -> Result<()> {
 
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("无法启动程序: {}", config.prog))?;
+        .with_context(|| format!("无法启动程序: {}", config.program))?;
     let status = child.wait()?;
 
     std::process::exit(status.code().unwrap_or(0));
 }
 
 /// 解析用户输入：区分位置参数和命名参数 (--key=val, -key val)
-fn parse_user_args(
-    args: &[String],
-    mode: &NamedArgsMode,
-) -> (Vec<String>, HashMap<String, String>) {
+fn parse_user_args(args: &[String], mode: &OptionsMode) -> (Vec<String>, HashMap<String, String>) {
     let mut pos = Vec::new();
     let mut named = HashMap::new();
     let mut i = 0;
@@ -197,8 +194,8 @@ fn parse_user_args(
 
         // 判定当前参数是否应作为“命名参数”解析
         let can_parse_named = match mode {
-            NamedArgsMode::Disabled => false,
-            NamedArgsMode::BeforeSep => !reached_separator && arg.starts_with('-'),
+            OptionsMode::Off => false,
+            OptionsMode::BeforeDashdash => !reached_separator && arg.starts_with('-'),
             _ => arg.starts_with('-'),
         };
 
@@ -224,7 +221,7 @@ fn parse_user_args(
             named.insert(key, value);
 
             // 如果是 Keep 模式，解析完还要塞回位置参数里
-            if *mode == NamedArgsMode::Keep {
+            if *mode == OptionsMode::Keep {
                 pos.push(arg.clone());
                 if step == 2 {
                     pos.push(args[i + 1].clone());
@@ -245,7 +242,7 @@ fn parse_user_args(
 fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String>) -> Vec<String> {
     let mut result = Vec::new();
     // 符号需先转义才能拼进正则（如 `$`、`(`、`+` 等）
-    let sym = regex::escape(&cfg.var_symbol);
+    let sym = regex::escape(&cfg.symbol);
     // 用 `<sym>` 作占位符，避免 `format!` 对正则里的 `{`/`}` 做转义处理
     let re = |pat: &str| Regex::new(&pat.replace("<sym>", &sym)).unwrap();
     let re_var = re(r"<sym>(\w+)|<sym>\((\w+)\)");
@@ -275,7 +272,7 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
                     // 用闭包做字面替换：regex 的字符串替换会把 item 里的 `$` 当作捕获组引用
                     // （`$i` → 空、`$$` → `$`、`$1` → 第 1 个捕获组），必须原样插入外部参数
                     let expanded = re_multi.replace_all(tpl, |_: &regex::Captures| item.as_str());
-                    result.push(maybe_quote(&expanded, cfg.shell_quote));
+                    result.push(maybe_quote(&expanded, cfg.quote_args));
                 }
             }
             continue;
@@ -299,7 +296,7 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
             if start_idx < end_excl {
                 let joined = pos[start_idx..end_excl].join(sep);
                 let expanded = re_join.replace_all(tpl, |_: &regex::Captures| joined.as_str());
-                result.push(maybe_quote(&expanded, cfg.shell_quote));
+                result.push(maybe_quote(&expanded, cfg.quote_args));
             }
             continue;
         }
@@ -324,7 +321,7 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
         });
 
         if !replaced.is_empty() {
-            result.push(maybe_quote(&replaced, cfg.shell_quote));
+            result.push(maybe_quote(&replaced, cfg.quote_args));
         }
     }
     result
@@ -352,17 +349,17 @@ mod tests {
 
     fn cfg_with(args: &[&str]) -> Config {
         Config {
-            prog: "prog".into(),
+            program: "program".into(),
             args: args.iter().map(|s| s.to_string()).collect(),
             env: HashMap::new(),
-            shell_quote: false,
+            quote_args: false,
             stdin: "inherit".into(),
             stdout: "inherit".into(),
             stderr: "inherit".into(),
             log_file: None,
             run_as_admin: false,
-            named_args_mode: NamedArgsMode::All,
-            var_symbol: "$".into(),
+            options_mode: OptionsMode::Parse,
+            symbol: "$".into(),
         }
     }
 
@@ -498,7 +495,7 @@ mod tests {
     #[test]
     fn single_arg_mode_with_custom_symbol() {
         let mut cfg = cfg_with(&["%(...args[2..3],,)"]);
-        cfg.var_symbol = "%".into();
+        cfg.symbol = "%".into();
         let out = build_final_args(&cfg, &args(&["A1", "A2", "A3"]), &HashMap::new());
         assert_eq!(out, args(&["A2,A3"]));
     }
@@ -513,7 +510,7 @@ mod tests {
     #[test]
     fn custom_symbol_substitutes_and_keeps_dollar_literal() {
         let mut cfg = cfg_with(&["$HOME", "%arg1", "%{...args}"]);
-        cfg.var_symbol = "%".into();
+        cfg.symbol = "%".into();
         let out = build_final_args(&cfg, &args(&["A", "$B"]), &HashMap::new());
         // `$HOME` 不再是占位符（原样传递）；`%arg1` 替换为 A；`%{...args}` 逐个展开
         assert_eq!(out, args(&["$HOME", "A", "A", "$B"]));
@@ -522,7 +519,7 @@ mod tests {
     #[test]
     fn custom_symbol_named_and_env() {
         let mut cfg = cfg_with(&["%user", "%VERSION"]);
-        cfg.var_symbol = "%".into();
+        cfg.symbol = "%".into();
         cfg.env.insert("VERSION".into(), "1.0".into());
         let mut named = HashMap::new();
         named.insert("user".to_string(), "admin".to_string());
@@ -533,14 +530,14 @@ mod tests {
     #[test]
     fn custom_symbol_with_regex_metachar() {
         let mut cfg = cfg_with(&["+arg1", "+{...args[2..2]}"]);
-        cfg.var_symbol = "+".into();
+        cfg.symbol = "+".into();
         let out = build_final_args(&cfg, &args(&["X", "Y"]), &HashMap::new());
         assert_eq!(out, args(&["X", "Y"]));
     }
 
     #[test]
     fn log_file_true_resolves_to_sibling_log() {
-        let cfg: Config = toml::from_str("prog = \"p\"\nlog_file = true\n").unwrap();
+        let cfg: Config = toml::from_str("program = \"p\"\nlog_file = true\n").unwrap();
         let resolved = cfg
             .log_file
             .as_ref()
@@ -551,19 +548,53 @@ mod tests {
 
     #[test]
     fn log_file_path_and_false() {
-        let cfg: Config = toml::from_str("prog = \"p\"\nlog_file = \"C:/logs/x.log\"\n").unwrap();
+        let cfg: Config =
+            toml::from_str("program = \"p\"\nlog_file = \"C:/logs/x.log\"\n").unwrap();
         assert_eq!(
             cfg.log_file.as_ref().unwrap().resolve(Path::new("a.toml")),
             Some(PathBuf::from("C:/logs/x.log"))
         );
 
-        let cfg: Config = toml::from_str("prog = \"p\"\nlog_file = false\n").unwrap();
+        let cfg: Config = toml::from_str("program = \"p\"\nlog_file = false\n").unwrap();
         assert_eq!(
             cfg.log_file.as_ref().unwrap().resolve(Path::new("a.toml")),
             None
         );
 
-        let cfg: Config = toml::from_str("prog = \"p\"\n").unwrap();
+        let cfg: Config = toml::from_str("program = \"p\"\n").unwrap();
         assert!(cfg.log_file.is_none());
+    }
+
+    #[test]
+    fn config_uses_plain_names() {
+        let cfg: Config = toml::from_str(
+            "program = \"p\"\nsymbol = \"%\"\nquote_args = true\noptions_mode = \"before_dashdash\"\nargs = [\"%arg1\"]\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.program, "p");
+        assert_eq!(cfg.symbol, "%");
+        assert!(cfg.quote_args);
+        assert_eq!(cfg.options_mode, OptionsMode::BeforeDashdash);
+        assert_eq!(cfg.args, vec!["%arg1".to_string()]);
+    }
+
+    #[test]
+    fn options_mode_values() {
+        let mode = |s: &str| {
+            toml::from_str::<Config>(&format!("program = \"p\"\noptions_mode = \"{s}\"\n"))
+                .map(|c| c.options_mode)
+        };
+        for (name, expected) in [
+            ("parse", OptionsMode::Parse),
+            ("before_dashdash", OptionsMode::BeforeDashdash),
+            ("off", OptionsMode::Off),
+            ("keep", OptionsMode::Keep),
+        ] {
+            assert_eq!(mode(name).unwrap(), expected);
+        }
+        // 旧名称已移除
+        assert!(mode("all").is_err());
+        assert!(mode("before_sep").is_err());
+        assert!(mode("disabled").is_err());
     }
 }
