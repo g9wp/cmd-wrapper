@@ -249,8 +249,8 @@ fn build_final_args(cfg: &Config, pos: &[String], named: &HashMap<String, String
     // 用 `<sym>` 作占位符，避免 `format!` 对正则里的 `{`/`}` 做转义处理
     let re = |pat: &str| Regex::new(&pat.replace("<sym>", &sym)).unwrap();
     let re_var = re(r"<sym>(\w+)|<sym>\((\w+)\)");
-    // 多参数模式：`${...args}` / `${...args[start..end]}` —— 每个位置参数各生成一个参数
-    let re_multi = re(r"<sym>\{\.\.\.args\[(\d*)\.\.(\d*)\]\}|<sym>\{\.\.\.args\}");
+    // 多参数模式：`${...args}`（等价 `${...args[..]}`）/ `${...args[start..end]}` —— 每个位置参数各生成一个参数
+    let re_multi = re(r"<sym>\{\.\.\.args(?:\[(\d*)\.\.(\d*)\])?\}");
     // 单参数模式：`$(...args[start..end])`，可带 `,<连接符>`（默认空格）—— 先 join 成一个参数
     let re_join = re(r"<sym>\(\.\.\.args(?:\[(\d*)\.\.(\d*)\])?(?:,([^)]*))?\)");
 
@@ -418,6 +418,26 @@ mod tests {
         assert_eq!(
             out,
             args(&["--A2 A3 A4x", "--A2,A3,A4x", "--A2wwwA3wwwA4x", "--A2A3A4x"])
+        );
+    }
+
+    #[test]
+    fn args_without_range_equals_empty_range() {
+        // `...args` 与 `...args[..]` 必须完全等价（多参数/单参数、带连接符均如是）
+        let cfg = cfg_with(&[
+            "${...args}",
+            "${...args[..]}",
+            "$(...args)",
+            "$(...args[..])",
+            "$(...args,,)",
+            "$(...args[..],,)",
+        ]);
+        let out = build_final_args(&cfg, &args(&["A1", "A2", "A3"]), &HashMap::new());
+        assert_eq!(
+            out,
+            args(&[
+                "A1", "A2", "A3", "A1", "A2", "A3", "A1 A2 A3", "A1 A2 A3", "A1,A2,A3", "A1,A2,A3",
+            ])
         );
     }
 
