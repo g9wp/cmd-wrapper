@@ -57,7 +57,7 @@ build.exe --target all
 | `stdin` / `stdout` / `stderr` | 字符串 | 输入/输出怎么接：`inherit` 接着用当前终端，`null` 丢掉，`piped` 走管道。 | `inherit` |
 | `log_file` | 字符串或布尔 | 把每次执行的最终命令记到哪。写路径就写那个文件；写 `true` 自动用同名的 `.log`（`build.exe` → `build.log`）；`false` 不记。 | 不记 |
 | `run_as_admin` | 布尔 | **仅 Windows**：以管理员身份运行（每次会弹 UAC 确认框）。 | `false` |
-| `options_mode` | 字符串 | 怎么看待输入里 `-名字 值` 这种写法，见「带名字的参数」一节。 | `"parse"` |
+| `options_mode` | 字符串 | 怎么看待输入里 `-名字 值` 这种写法，见「带名字的参数」一节。 | `"keep"` |
 
 > 字段名都按字面意思写：`program` 要跑的程序、`args` 参数、`symbol` 占位符符号、`quote_args` 加引号、`options_mode` 选项解析方式。
 
@@ -151,14 +151,19 @@ args = ["-lc", "%{...args}"]
 
 ## 带名字的参数怎么解析（`options_mode`）
 
-输入里的 `-名字 值` / `--名字=值` 默认会被认成「带名字的参数」，而且**从普通参数里拿掉**（所以不会再出现在 `$arg1` 里）。想改变这个规则时用：
+输入里的 `-名字 值` / `--名字=值` 默认会被认成「带名字的参数」，而且**从普通参数里拿掉**（所以不会再出现在 `$arg1` 里）。
+
+> 重要：只有**配置模板里真正用到**的名字才算选项（例如模板里写了 `$f`，`-f` 才会被解析）。
+> 配置里没出现的 `-xxx` 会原样传给目标程序，也不会吞掉后面的参数——所以包一个通用程序时直接透传就行。
 
 | 模式 | 你可以读成 | 效果 |
 | :--- | :--- | :--- |
-| `parse`（默认） | 全都当选项 | `-x 1` 收进 `$x`，不占 `$arg1` 的位置 |
+| `parse` | 只当选项 | `-x 1` 收进 `$x`，不再占 `$arg1` 的位置 |
 | `before_dashdash` | 只认 `--` 前面的 | `--` 之后的 `-x` 不再当选项，原样留在普通参数里 |
-| `off` | 完全不认 | 所有输入都按顺序进 `$arg1`、`$arg2`… |
-| `keep` | 既当选项、也留一份 | `-x 1` 收进 `$x`，同时仍占 `$argN` 的位置 |
+| `off` | 完全不当选项 | 所有输入都按顺序进 `$arg1`、`$arg2`… |
+| `keep`（默认） | 既当选项、也留一份 | `-x 1` 收进 `$x`，同时仍占 `$argN` 的位置（不会凭空消失） |
+
+（`options_mode` 只影响上面说的「配置里用到的名字」；未用到的 `-xxx` 在任何模式下都原样透传。）
 
 ---
 
@@ -168,6 +173,7 @@ args = ["-lc", "%{...args}"]
 
 ```toml
 program = "C:/msys64/usr/bin/fish.exe"
+options_mode = "parse"
 args = ["-lc", "xxx/yyy/a.fish", "-F=$f", "-d", "$d", "--long2=$long", "$arg2", "xxx$(arg3)", "$arg1", "args:", "${...args}", "args[1-3]:", "--a-${...args[2..3]}"]
 log_file = "C:/logs/aa_exec.log"
 
@@ -178,6 +184,8 @@ VERSION = "1.0.0"
 ```bash
 ./aa.exe --long=LONG -f -d ddd AA BB CCC DD
 ```
+
+> 这个例子要把 `-f` / `-d` / `--long` 从普通参数里拿掉，所以显式设了 `options_mode = "parse"`（默认的 `keep` 会保留一份，`$argN` 里也会包含这些选项）。
 
 实际执行的是：
 
@@ -273,7 +281,7 @@ args = ["-lc", "${...args}"]
 # stderr = "inherit"  # inherit / null / piped
 # log_file = false  # true = 同名的 .log；或写具体路径
 # run_as_admin = false  # Windows: 以管理员身份运行
-# options_mode = "parse"  # parse / before_dashdash / off / keep
+# options_mode = "keep"  # parse / before_dashdash / off / keep
 ```
 
 > 提示：创建模式只在「找不到配置」时触发。如果你的 `cmd-wrapper.exe` 旁边已经有 `cmd-wrapper.toml`，请改用一份没有配置的干净副本当「安装器」来创建别名。

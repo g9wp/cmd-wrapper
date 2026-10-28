@@ -297,7 +297,7 @@ fn render_full(opts: &CreateOptions) -> String {
         commented.push_str("# run_as_admin = false  # Windows: 以管理员身份运行\n");
     }
     if opts.options_mode.is_none() {
-        commented.push_str("# options_mode = \"parse\"  # parse / before_dashdash / off / keep\n");
+        commented.push_str("# options_mode = \"keep\"  # parse / before_dashdash / off / keep\n");
     }
     if !commented.is_empty() {
         out.push_str("\n# --- 未启用的选项（默认值，取消注释即可启用）---\n");

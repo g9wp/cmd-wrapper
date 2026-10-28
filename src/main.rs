@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -72,7 +72,7 @@ enum OptionsMode {
 }
 
 fn default_mode() -> OptionsMode {
-    OptionsMode::Parse
+    OptionsMode::Keep
 }
 
 fn default_symbol() -> String {
@@ -134,8 +134,9 @@ fn main() -> Result<()> {
         eprintln!("警告: `run_as_admin` 仅在 Windows 平台生效，已忽略");
     }
 
-    // 2. 解析用户输入的参数
-    let (pos_args, named_args) = parse_user_args(&user_args, &config.options_mode);
+    // 2. 解析用户输入的参数（只有配置里引用过的 `$名字` 才当作选项，其余原样透传）
+    let referenced = referenced_names(&config);
+    let (pos_args, named_args) = parse_user_args(&user_args, &config.options_mode, &referenced);
 
     // 3. 构建最终参数列表
     let final_args = build_final_args(&config, &pos_args, &named_args);
@@ -175,8 +176,32 @@ fn main() -> Result<()> {
     std::process::exit(status.code().unwrap_or(0));
 }
 
+/// 收集配置模板里真正引用到的「带名字参数」（`$名字` / `$(名字)`）。
+/// 解析输入时只把这类 `-名字` 当成本工具自己的选项，
+/// 其余 `-xxx` 一律原样传给目标程序，避免吞掉目标程序的参数。
+fn referenced_names(cfg: &Config) -> HashSet<String> {
+    let sym = regex::escape(&cfg.symbol);
+    let re = Regex::new(&format!(r"{sym}(\w+)|{sym}\((\w+)\)")).unwrap();
+    let mut set = HashSet::new();
+    for tpl in &cfg.args {
+        for caps in re.captures_iter(tpl) {
+            let key = caps.get(1).or(caps.get(2)).unwrap().as_str();
+            // `$argN` 是位置参数，不算「带名字参数」
+            if key.starts_with("arg") && key[3..].parse::<usize>().is_ok() {
+                continue;
+            }
+            set.insert(key.to_string());
+        }
+    }
+    set
+}
+
 /// 解析用户输入：区分位置参数和命名参数 (--key=val, -key val)
-fn parse_user_args(args: &[String], mode: &OptionsMode) -> (Vec<String>, HashMap<String, String>) {
+fn parse_user_args(
+    args: &[String],
+    mode: &OptionsMode,
+    referenced: &HashSet<String>,
+) -> (Vec<String>, HashMap<String, String>) {
     let mut pos = Vec::new();
     let mut named = HashMap::new();
     let mut i = 0;
@@ -193,11 +218,14 @@ fn parse_user_args(args: &[String], mode: &OptionsMode) -> (Vec<String>, HashMap
         }
 
         // 判定当前参数是否应作为“命名参数”解析
-        let can_parse_named = match mode {
+        let can_parse = match mode {
             OptionsMode::Off => false,
             OptionsMode::BeforeDashdash => !reached_separator && arg.starts_with('-'),
             _ => arg.starts_with('-'),
         };
+        // 只有配置里引用过的 `$名字` 才当选项，其余 `-xxx` 原样透传给目标程序
+        let key_name = arg.split_once('=').map_or(arg.as_str(), |(k, _)| k);
+        let can_parse_named = can_parse && referenced.contains(key_name.trim_start_matches('-'));
 
         if can_parse_named {
             let key;
@@ -358,7 +386,7 @@ mod tests {
             stderr: "inherit".into(),
             log_file: None,
             run_as_admin: false,
-            options_mode: OptionsMode::Parse,
+            options_mode: default_mode(),
             symbol: "$".into(),
         }
     }
@@ -596,5 +624,53 @@ mod tests {
         assert!(mode("all").is_err());
         assert!(mode("before_sep").is_err());
         assert!(mode("disabled").is_err());
+    }
+
+    #[test]
+    fn default_options_mode_is_keep() {
+        let cfg: Config = toml::from_str("program = \"p\"\n").unwrap();
+        assert_eq!(cfg.options_mode, OptionsMode::Keep);
+    }
+
+    #[test]
+    fn keep_mode_keeps_referenced_options_in_positional() {
+        // 默认 keep：命中的选项既进 $f，也保留在位置参数里（不会凭空消失）
+        let cfg = cfg_with(&["$f", "${...args}"]);
+        let referenced = referenced_names(&cfg);
+        let input: Vec<String> = ["AA", "BB", "-f"].iter().map(|s| s.to_string()).collect();
+        let (pos, named) = parse_user_args(&input, &cfg.options_mode, &referenced);
+        assert_eq!(named.get("f"), Some(&"true".to_string()));
+        assert_eq!(pos, input);
+    }
+
+    #[test]
+    fn unreferenced_option_is_passed_through() {
+        // 配置只用了 ${...args}：`-Command` 不是本工具的选项，不能吞掉后面的参数
+        let cfg = cfg_with(&["${...args}"]);
+        let referenced = referenced_names(&cfg);
+        let input: Vec<String> = ["-Command", "Get-NetFirewallRule", "-DisplayName", "x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (pos, named) = parse_user_args(&input, &cfg.options_mode, &referenced);
+        assert!(named.is_empty());
+        assert_eq!(pos, input);
+        // 展开结果 = 原样所有输入参数
+        assert_eq!(build_final_args(&cfg, &pos, &named), input);
+    }
+
+    #[test]
+    fn referenced_option_is_parsed() {
+        let mut cfg = cfg_with(&["$f", "$d", "${...args}"]);
+        cfg.options_mode = OptionsMode::Parse;
+        let referenced = referenced_names(&cfg);
+        let input: Vec<String> = ["-f", "-d", "ddd", "AA", "BB"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (pos, named) = parse_user_args(&input, &cfg.options_mode, &referenced);
+        assert_eq!(named.get("f"), Some(&"true".to_string()));
+        assert_eq!(named.get("d"), Some(&"ddd".to_string()));
+        assert_eq!(pos, vec!["AA", "BB"]);
     }
 }
